@@ -1,12 +1,14 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
-import { DockerService } from '@/docker/docker.service';
-import { ContainerCreateOptions } from 'dockerode';
-import { Server } from '@/lib/entities/server.entity';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { ServerException } from '@/lib/exceptions/server';
-import { v4 as uuidv4 } from 'uuid';
-import { generateContainerName } from '@/lib/utils/name-generator';
+import { HttpStatus, Injectable } from "@nestjs/common";
+import { DockerService } from "@/docker/docker.service";
+import { ContainerCreateOptions } from "dockerode";
+import { Server } from "@/lib/entities/server.entity";
+import { InjectRepository } from "@nestjs/typeorm";
+import { Repository } from "typeorm";
+import { v4 as uuidv4 } from "uuid";
+import { ThrowException } from "@/lib/exceptions/throw";
+import { generateContainerName } from "@/lib/utils/name-generator";
+import { CreateServerDto } from "./dtos/create-server.dto";
+import { parseProperties } from "@/lib/utils/parse-properties";
 
 /**
  * Service responsible for managing Minecraft servers.
@@ -32,11 +34,11 @@ export class MinecraftService {
     });
 
     if (!server) {
-      throw new ServerException({
-        message: 'Minecraft server not found or unavailable.',
-        errorCode: 'CX_MINECRAFT_SERVER_NOT_FOUND',
-        statusCode: HttpStatus.NOT_FOUND,
-      });
+      throw new ThrowException(
+        "Minecraft server not found or unavailable.",
+        "CX_MINECRAFT_SERVER_NOT_FOUND",
+        HttpStatus.NOT_FOUND,
+      );
     }
 
     return server;
@@ -50,7 +52,13 @@ export class MinecraftService {
    */
   async getServer(serverId: string) {
     const server = await this.getServerFromDB(serverId);
-    return this.dockerService.getContainer(server.containerId);
+    // const container = await this.dockerService.getContainer(server.containerId);
+    const fileContent = await this.dockerService.getFile(
+      server.containerId,
+      "/data/server.properties",
+    );
+
+    return { server, properties: parseProperties(fileContent) };
   }
 
   /**
@@ -68,14 +76,71 @@ export class MinecraftService {
 
   /**
    * Create a new Minecraft server.
-   * @param options Options to be passed to the dockerode createContainer method.
-   * @returns An object containing the server ID, container ID, and options for the newly created server.
-   * @throws DockerException if the container could not be created or started.
+   * @param options Options for the Minecraft server.
+   * @returns The created server's ID and container options.
+   * @throws BadRequestException if the RAM is invalid.
+   * @throws DockerException if the container could not be created.
    */
-  async createServer() {
+  async createServer(options: CreateServerDto) {
+    const {
+      platform = "java",
+      version = "latest",
+      maxPlayers = 10,
+      motd = "Welcome to Minecraft!",
+      allowCheats = false,
+      eula = true,
+      ram = 1024,
+      cpuLimit,
+    } = options;
+
+    if (ram <= 0) {
+      throw new ThrowException(
+        "The specified ram is invalid.",
+        "CX_MINECRAFT_SERVER_INVALID_RAM",
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    let image: string = "itzg/minecraft-server";
+    const baseImage =
+      platform === "java"
+        ? "itzg/minecraft-server"
+        : platform === "bedrock"
+          ? "itzg/minecraft-bedrock-server"
+          : null;
+
+    if (!baseImage) {
+      throw new ThrowException(
+        "The specified platform is not supported.",
+        "CX_MINECRAFT_SERVER_INVALID_PLATFORM",
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    image = version === "latest" ? baseImage : `${baseImage}:${version}`;
+
+    const hostConfig: ContainerCreateOptions["HostConfig"] = {
+      Memory: ram * 1024 * 1024,
+      NanoCpus: cpuLimit ? cpuLimit * 1e9 : undefined,
+      PortBindings: {
+        "25565/tcp": [{ HostPort: "25565" }],
+      },
+    };
+
+    if (platform === "bedrock") {
+      hostConfig.PortBindings["19132/udp"] = [{ HostPort: "19132" }];
+    }
+
     const containerOptions: ContainerCreateOptions = {
-      Image: 'itzg/minecraft-server',
+      Image: image,
       name: `cx_${generateContainerName()}`,
+      Env: [
+        `EULA=${eula}`,
+        `MAX_PLAYERS=${maxPlayers}`,
+        `MOTD=${motd}`,
+        `ALLOW_CHEATS=${allowCheats}`,
+      ],
+      HostConfig: hostConfig,
     };
 
     const container =
@@ -131,6 +196,7 @@ export class MinecraftService {
   async stopServer(serverId: string) {
     const server = await this.getServerFromDB(serverId);
 
+    // TODO: Make it process in background
     await this.dockerService.stopContainer(server.containerId);
     return { server };
   }

@@ -1,6 +1,7 @@
-import * as Docker from 'dockerode';
-import { Injectable } from '@nestjs/common';
-import { DockerException } from '@/lib/exceptions/docker';
+import * as Docker from "dockerode";
+import { Injectable } from "@nestjs/common";
+import { DockerException } from "@/lib/exceptions/docker";
+import * as stream from "node:stream";
 
 /**
  * Service for docker operations
@@ -107,6 +108,35 @@ export class DockerService {
     try {
       const container = this.docker.getContainer(containerId);
       await container.stop();
+    } catch (error) {
+      throw new DockerException(error);
+    }
+  }
+
+  async getFile(containerId: string, filePath: string): Promise<string> {
+    try {
+      const container = this.docker.getContainer(containerId);
+      const fileStream = await container.getArchive({ path: filePath });
+
+      const chunks: Buffer[] = [];
+      return new Promise((resolve, reject) => {
+        fileStream.pipe(
+          new stream.Writable({
+            write(chunk, encoding, callback) {
+              chunks.push(chunk);
+              callback();
+            },
+          }),
+        );
+
+        fileStream.on("end", () => {
+          resolve(Buffer.concat(chunks).toString());
+        });
+
+        fileStream.on("error", (err) => {
+          reject(new DockerException(err));
+        });
+      });
     } catch (error) {
       throw new DockerException(error);
     }
