@@ -4,7 +4,6 @@ import { ContainerCreateOptions } from "dockerode";
 import { Server } from "@/lib/entities/server.entity";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
-import { v4 as uuidv4 } from "uuid";
 import { ThrowException } from "@/lib/exceptions/throw";
 import { generateContainerName } from "@/lib/utils/name-generator";
 import { CreateServerDto } from "./dtos/create-server.dto";
@@ -30,7 +29,7 @@ export class MinecraftService {
    */
   private async getServerFromDB(serverId: string) {
     const server = await this.serverRepository.findOne({
-      where: { serverId },
+      where: { id: serverId },
     });
 
     if (!server) {
@@ -52,7 +51,7 @@ export class MinecraftService {
    */
   async getServer(serverId: string) {
     const server = await this.getServerFromDB(serverId);
-    // const container = await this.dockerService.getContainer(server.containerId);
+    // const container = await this.dockerService.getContainer(server.containerId); (TODO: get status)
     const fileContent = await this.dockerService.getFile(
       server.containerId,
       "/data/server.properties",
@@ -148,12 +147,11 @@ export class MinecraftService {
     await this.dockerService.startContainer(container.id);
 
     const newServer = new Server();
-    newServer.serverId = uuidv4();
     newServer.containerId = container.id;
     await this.serverRepository.save(newServer);
 
     return {
-      serverId: newServer.serverId,
+      id: newServer.id,
       containerId: container.id,
       containerOptions,
     };
